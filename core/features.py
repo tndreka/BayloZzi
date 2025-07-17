@@ -53,7 +53,7 @@ def add_features(df):
     # Generate Trade Signal — simple logic for now (can be refined)
     df['Signal'] = np.where(df['close'].shift(-1) > df['close'], 1, 0)
 
-    # Drop NaNs
-    df = df.dropna().reset_index(drop=True)
+    # Drop NaNs and keep original datetime index
+    df = df.dropna()
 
     return df

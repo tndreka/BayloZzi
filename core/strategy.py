@@ -10,6 +10,7 @@ class AceStrategy(bt.Strategy):
         confidence_thresh=0.6,
         risk_per_trade=0.02,
         reward_risk=1.5,
+        leverage=30,
     )
 
     def __init__(self):
@@ -17,9 +18,12 @@ class AceStrategy(bt.Strategy):
         self.order = None
         self.order_pending = False
 
-        # Initialize indicators for each selected feature (e.g., MA, RSI)
-        for feat in self.p.features:
-            setattr(self, feat, bt.indicators.SimpleMovingAverage(self.data.close, period=1))
+        # ATR indicator (used for stop distance)
+        self.atr = bt.ind.ATR(self.data, period=14)
+
+        # Dummy placeholders to allow getattr on self.data for engineered columns
+        # Backtrader automatically maps additional Pandas columns to self.data.<colname>
+        # so we don't need to create indicators manually.
 
     def log(self, txt, dt=None):
         dt = dt or self.data.datetime.datetime()
@@ -27,6 +31,10 @@ class AceStrategy(bt.Strategy):
 
     def next(self):
         if self.order_pending:
+            return
+
+        # Wait until we have enough history for ATR (14 periods)
+        if len(self.data) < 15 or np.isnan(self.atr[0]):
             return
 
         # Build feature vector for model prediction
@@ -37,12 +45,17 @@ class AceStrategy(bt.Strategy):
 
         # Trade setup
         price = self.data.close[0]
-        atr = bt.ind.ATR(self.data, period=14)[0]
+        atr = self.atr[0]
         stop_dist = 2 * atr
         tp_dist = self.p.reward_risk * stop_dist
 
         if not self.position and conf > self.p.confidence_thresh:
-            size = (self.broker.get_cash() * self.p.risk_per_trade) / stop_dist
+            cash = self.broker.get_cash()
+            risk_cash = cash * self.p.risk_per_trade
+            raw_size = risk_cash / stop_dist  # units based on risk
+            max_affordable = (cash * self.p.leverage) / price
+            size = min(raw_size, max_affordable)
+            size = max(1, int(size))
             if pred == 1:
                 self.order = self.buy_bracket(
                     size=size,

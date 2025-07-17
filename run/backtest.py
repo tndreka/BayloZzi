@@ -1,26 +1,28 @@
 # run/backtest.py
 
 import backtrader as bt
-from core.data_loader import download_data
+from core.data_loader import download_alpha_fx_daily
 from core.features import add_features
-from core.model import train_enhanced_model
+from core.model import load_model
+from core.bt_feed import FeatureData
 from core.strategy import AceStrategy
 
 def run_backtest():
     # === Step 1: Load and prepare data ===
-    df = download_data()             # Download EURUSD 1h data
-    df = add_features(df)            # Add technical indicators
+    daily = download_alpha_fx_daily()
+    hourly = daily.resample('1H').ffill()
+    df = add_features(hourly)
 
-    # === Step 2: Train ML model ===
-    model, X_test, y_test, preds, preds_proba = train_enhanced_model(df)
+    # === Step 2: Load existing ML model ===
+    model = load_model()
 
-    # === Step 3: Prepare Backtrader feed ===
-    test_df = df.iloc[-len(X_test):].copy()
-    feed = bt.feeds.PandasData(dataname=test_df)
+    # Use most recent 10k rows for backtest
+    test_df = df.tail(10000).copy()
+    feed = FeatureData(dataname=test_df)
 
     # === Step 4: Configure Cerebro ===
     cerebro = bt.Cerebro()
-    cerebro.broker.setcash(10000)
+    cerebro.broker.setcash(100)
     cerebro.broker.setcommission(commission=0.0005)
     cerebro.broker.set_slippage_perc(0.001)
     cerebro.adddata(feed)
@@ -29,6 +31,7 @@ def run_backtest():
         AceStrategy,
         model=model,
         features=[
+            'open','high','low','close','volume',
             'MA5', 'MA10', 'MA20', 'RSI', 'MACD', 'MACD_signal',
             'BB_upper', 'BB_lower', 'Momentum', 'Volatility',
             'Volume_MA', 'Price_Range', 'Prev_Direction',
@@ -37,6 +40,7 @@ def run_backtest():
     )
 
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe')
+    cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='trades')
     cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
 
     # === Step 5: Run Backtest ===
@@ -48,8 +52,13 @@ def run_backtest():
     print("Final Portfolio Value: $%.2f" % cerebro.broker.getvalue())
     print("Sharpe Ratio:", strat.analyzers.sharpe.get_analysis())
     print("Drawdown:", strat.analyzers.drawdown.get_analysis())
+    print("Trade Analysis:", strat.analyzers.trades.get_analysis())
 
-    cerebro.plot(style='candlestick')
+    # Plotting usually requires a GUI backend (tkinter). Skip if not available.
+    try:
+        cerebro.plot(style='candlestick')
+    except ModuleNotFoundError:
+        print("Plot skipped: GUI backend not available in this environment.")
 
 if __name__ == "__main__":
     run_backtest()
