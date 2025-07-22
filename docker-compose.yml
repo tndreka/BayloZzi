@@ -1,0 +1,211 @@
+# Docker Compose for BayloZzi Forex Trading System
+# Enhanced setup with monitoring and external services
+
+version: '3.8'
+
+services:
+  # Main trading application
+  baylo-zzi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILD_DATE: ${BUILD_DATE:-2025-07-19}
+        VERSION: ${VERSION:-1.0.0}
+    container_name: baylo-zzi-trading
+    environment:
+      # Trading configuration
+      - TRADING_MODE=${TRADING_MODE:-paper}
+      - RISK_TOLERANCE=${RISK_TOLERANCE:-low}
+      - MAX_POSITION_SIZE=${MAX_POSITION_SIZE:-0.1}
+      
+      # API Keys (use environment or .env file)
+      - ALPHAVANTAGE_API_KEY=${ALPHAVANTAGE_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      
+      # Database connection
+      - DATABASE_URL=${DATABASE_URL:-postgresql://trader:password@postgres:5432/trading_db}
+      
+      # Redis connection
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      
+      # Logging configuration
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FORMAT=json
+      
+      # External services
+      - NEWS_API_KEY=${NEWS_API_KEY}
+      
+    volumes:
+      # Persistent data storage
+      - trading_data:/app/data
+      - trading_models:/app/models
+      - trading_logs:/app/logs
+      
+      # Configuration override
+      - ./.env:/app/.env:ro
+      
+    depends_on:
+      - postgres
+      - redis
+      
+    networks:
+      - trading_network
+      
+    restart: unless-stopped
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "/app/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # PostgreSQL for trade data storage
+  postgres:
+    image: postgres:15-alpine
+    container_name: baylo-zzi-postgres
+    environment:
+      - POSTGRES_DB=trading_db
+      - POSTGRES_USER=trader
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-secure_password_change_me}
+      - POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256
+      
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      
+    ports:
+      - "5432:5432"
+      
+    networks:
+      - trading_network
+      
+    restart: unless-stopped
+    
+    # Security hardening
+    security_opt:
+      - no-new-privileges:true
+    
+    # Health check
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trader -d trading_db"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Redis for caching and session management
+  redis:
+    image: redis:7-alpine
+    container_name: baylo-zzi-redis
+    command: redis-server --requirepass ${REDIS_PASSWORD:-redis_password_change_me}
+    
+    volumes:
+      - redis_data:/data
+      
+    ports:
+      - "6379:6379"
+      
+    networks:
+      - trading_network
+      
+    restart: unless-stopped
+    
+    # Security hardening
+    security_opt:
+      - no-new-privileges:true
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Monitoring with Prometheus (optional)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: baylo-zzi-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+      
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+      
+    ports:
+      - "9090:9090"
+      
+    networks:
+      - trading_network
+      
+    restart: unless-stopped
+    profiles:
+      - monitoring
+
+  # Grafana for visualization (optional)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: baylo-zzi-grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin_password_change_me}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      
+    ports:
+      - "3000:3000"
+      
+    depends_on:
+      - prometheus
+      
+    networks:
+      - trading_network
+      
+    restart: unless-stopped
+    profiles:
+      - monitoring
+
+# Named volumes for data persistence
+volumes:
+  trading_data:
+    driver: local
+  trading_models:
+    driver: local
+  trading_logs:
+    driver: local
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+# Custom network for service communication
+networks:
+  trading_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
